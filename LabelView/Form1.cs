@@ -42,6 +42,9 @@ namespace LabelView
             BackColor   = Color.FromArgb(43, 43, 43);
             KeyPreview  = true;
             KeyDown    += OnKeyDown;
+            AllowDrop   = true;
+            DragEnter  += OnDragEnter;
+            DragDrop   += OnDragDrop;
 
             // ── Split (left = file list, right = viewer) ─────────────
             var split = new SplitContainer
@@ -242,6 +245,18 @@ namespace LabelView
             {
                 MessageBox.Show($"Unexpected error:\n{ex.Message}", "LabelView", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private void OnDragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+                e.Effect = DragDropEffects.Copy;
+        }
+
+        private void OnDragDrop(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+                OpenFileAsync(files[0]);
         }
 
         private void PopulateFileList(string dir)
