@@ -1,3 +1,4 @@
+using System.Drawing.Imaging;
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Text;
@@ -17,6 +18,9 @@ namespace LabelView
         private int                _rotation;          // 0 / 90 / 180 / 270
         private CancellationTokenSource? _renderCts;
 
+        private static readonly string SettingsDir  = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LabelView");
+        private static readonly string SettingsFile = Path.Combine(SettingsDir, "settings.txt");
+
         // ── Controls ─────────────────────────────────────────────────
         private ListBox    _fileList = null!;
         private PictureBox _picture  = null!;
@@ -29,6 +33,7 @@ namespace LabelView
         public Form1(string? initialFile = null)
         {
             InitializeComponent();
+            _rotation = LoadRotation();
             BuildUi();
             if (initialFile is not null)
                 Load += (_, _) => OpenFileAsync(initialFile);
@@ -229,7 +234,6 @@ namespace LabelView
                 ClearCache();
                 _labels       = ExtractLabels(content);
                 _currentIndex = 0;
-                _rotation     = 0;
                 UpdateCounter();
 
                 if (_labels.Count == 0)
@@ -306,12 +310,14 @@ namespace LabelView
         private void Rotate(int delta)
         {
             _rotation = ((_rotation + delta) % 360 + 360) % 360;
+            SaveRotation();
             if (_cache.TryGetValue(_currentIndex, out var bmp)) ShowBitmap(bmp);
         }
 
         private void SetRotation(int angle)
         {
             _rotation = ((angle % 360) + 360) % 360;
+            SaveRotation();
             if (_cache.TryGetValue(_currentIndex, out var bmp)) ShowBitmap(bmp);
         }
 
@@ -395,20 +401,16 @@ namespace LabelView
                  .Select(m => m.Value)
                  .ToList();
 
-        // Attempt to read ^PW (print width, dots) and ^LL (label length, dots).
-        // 8 dpmm * 25.4 mm/inch ≈ 203.2 dots/inch.
+        // Detect print width from ^PW. Use a generous height (12") so nothing
+        // gets clipped; we trim bottom whitespace after rendering.
         private static (double w, double h) DetectLabelSize(string zpl)
         {
-            const double dpi = 8 * 25.4;
-            double w = 4.0, h = 6.0;
+            const double dpi = 8 * 25.4;  // 8 dpmm * 25.4 mm/inch ≈ 203.2 dots/inch
+            double w = 4.0;
             var pw = Regex.Match(zpl, @"\^PW(\d+)", RegexOptions.IgnoreCase);
-            var ll = Regex.Match(zpl, @"\^LL(\d+)", RegexOptions.IgnoreCase);
             if (pw.Success) w = Math.Round(int.Parse(pw.Groups[1].Value) / dpi, 2);
-            if (ll.Success) h = Math.Round(int.Parse(ll.Groups[1].Value) / dpi, 2);
-            // Clamp to reasonable range
             w = Math.Clamp(w, 0.5, 20.0);
-            h = Math.Clamp(h, 0.5, 20.0);
-            return (w, h);
+            return (w, 12.0);
         }
 
         // ── Labelary API ─────────────────────────────────────────────
@@ -427,9 +429,50 @@ namespace LabelView
             resp.EnsureSuccessStatusCode();
 
             var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
-            // new Bitmap(MemoryStream) reads all pixel data immediately, so the stream can be closed.
             using var ms = new MemoryStream(bytes);
-            return new Bitmap(ms);
+            var raw = new Bitmap(ms);
+            return TrimBottomWhitespace(raw);
+        }
+
+        // Scan from the bottom up and crop away trailing white rows.
+        private static Bitmap TrimBottomWhitespace(Bitmap bmp)
+        {
+            int lastRow = bmp.Height - 1;
+            var data = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
+                                     ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            try
+            {
+                unsafe
+                {
+                    byte* scan0 = (byte*)data.Scan0;
+                    int stride = data.Stride;
+                    // Walk rows from bottom to top
+                    for (int y = bmp.Height - 1; y >= 0; y--)
+                    {
+                        byte* row = scan0 + y * stride;
+                        for (int x = 0; x < bmp.Width; x++)
+                        {
+                            // BGRA layout: B=row[0], G=row[1], R=row[2], A=row[3]
+                            int off = x * 4;
+                            if (row[off] != 255 || row[off + 1] != 255 || row[off + 2] != 255)
+                            {
+                                lastRow = y;
+                                goto done;
+                            }
+                        }
+                    }
+                    done:;
+                }
+            }
+            finally { bmp.UnlockBits(data); }
+
+            int cropHeight = Math.Min(lastRow + 20, bmp.Height); // small bottom margin
+            if (cropHeight >= bmp.Height)
+                return bmp;
+
+            var cropped = bmp.Clone(new Rectangle(0, 0, bmp.Width, cropHeight), bmp.PixelFormat);
+            bmp.Dispose();
+            return cropped;
         }
 
         // ── Cleanup ──────────────────────────────────────────────────
@@ -453,6 +496,31 @@ namespace LabelView
         }
 
         private void SetStatus(string msg) => _status.Text = msg;
+
+        // ── Settings persistence ─────────────────────────────────────
+
+        private static int LoadRotation()
+        {
+            try
+            {
+                if (File.Exists(SettingsFile) && int.TryParse(File.ReadAllText(SettingsFile).Trim(), out int r))
+                    return ((r % 360) + 360) % 360;
+            }
+            catch { }
+            return 0;
+        }
+
+        private static void SaveRotation(int rotation)
+        {
+            try
+            {
+                Directory.CreateDirectory(SettingsDir);
+                File.WriteAllText(SettingsFile, rotation.ToString());
+            }
+            catch { }
+        }
+
+        private void SaveRotation() => SaveRotation(_rotation);
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
