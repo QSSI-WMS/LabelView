@@ -35,6 +35,10 @@ namespace LabelView
             InitializeComponent();
             _rotation = LoadRotation();
             BuildUi();
+
+            AutoUpdater.Cleanup();
+            Shown += async (_, _) => await CheckForUpdateAsync(silent: true);
+
             if (initialFile is not null)
                 Load += (_, _) => OpenFileAsync(initialFile);
         }
@@ -521,6 +525,34 @@ namespace LabelView
         }
 
         private void SaveRotation() => SaveRotation(_rotation);
+
+        // ── Auto-update ──────────────────────────────────────────────
+
+        private async Task CheckForUpdateAsync(bool silent)
+        {
+            var update = await AutoUpdater.CheckAsync();
+
+            if (update == null)
+            {
+                if (!silent)
+                    MessageBox.Show(this, "You are running the latest version.",
+                        "LabelView", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var sizeMb = update.Size / (1024.0 * 1024.0);
+            var answer = MessageBox.Show(this,
+                $"Version {update.Version} is available (current: " +
+                $"{typeof(AutoUpdater).Assembly.GetName().Version?.ToString(3)}).\n\n" +
+                $"Download size: {sizeMb:F1} MB\n\n" +
+                "Download and install now?",
+                "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+            if (answer != DialogResult.Yes) return;
+
+            if (await AutoUpdater.ApplyAsync(update, this))
+                Close(); // new version is already running
+        }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
