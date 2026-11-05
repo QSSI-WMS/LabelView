@@ -4,14 +4,25 @@ using System.Text.Json;
 namespace LabelView;
 
 /// <summary>
-/// Checks GitHub Releases for a newer version and applies the update in-place.
+/// Checks an S3-hosted manifest for a newer version and applies the update in-place.
 /// The running exe is renamed to .old (Windows allows this), the new one takes
 /// its name, and the app restarts. The .old file is cleaned up on next launch.
+///
+/// The release assets live in a public-read S3 bucket under an unguessable key
+/// prefix, so no credential is embedded in the client. The publish step uploads
+/// two exes plus a <c>latest.json</c> manifest describing them.
 /// </summary>
 internal static class AutoUpdater
 {
-    private const string ReleasesUrl =
-        "https://api.github.com/repos/QSSI-WMS/LabelView/releases/latest";
+    /// <summary>
+    /// Base URL of the release folder in the S3 bucket. Must end with a slash.
+    /// Keep this in sync with the publish script's upload target. If the bucket
+    /// name, region, or key prefix changes, update this one line and rebuild.
+    /// </summary>
+    private const string BaseUrl =
+        "https://qssi-tools-autoupdate.s3.us-east-2.amazonaws.com/labelview/8a87673bba6101b9009c654b/";
+
+    private const string ManifestUrl = BaseUrl + "latest.json";
 
     /// <summary>Threshold to distinguish the small (framework-dependent) exe from the full one.</summary>
     private const long FullExeThreshold = 20_000_000;
@@ -32,11 +43,13 @@ internal static class AutoUpdater
     {
         try
         {
-            var json = await Http.GetStringAsync(ReleasesUrl);
+            // Cache-buster so a stale intermediary proxy can't hide a fresh manifest.
+            var json = await Http.GetStringAsync(
+                ManifestUrl + "?t=" + DateTime.UtcNow.Ticks);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            var tag = root.GetProperty("tag_name").GetString();
+            var tag = root.GetProperty("version").GetString();
             if (tag == null) return null;
 
             var remote = Version.Parse(tag.TrimStart('v'));
@@ -53,7 +66,7 @@ internal static class AutoUpdater
                 var name = asset.GetProperty("name").GetString();
                 if (string.Equals(name, targetName, StringComparison.OrdinalIgnoreCase))
                 {
-                    var url = asset.GetProperty("browser_download_url").GetString();
+                    var url = asset.GetProperty("url").GetString();
                     var size = asset.GetProperty("size").GetInt64();
                     if (url != null)
                         return new UpdateInfo(remote, url, size);
@@ -82,7 +95,7 @@ internal static class AutoUpdater
 
         try
         {
-            // Download the new exe.
+            // Download the new exe straight from S3 (public object, no auth).
             using var response = await Http.GetAsync(update.DownloadUrl);
             response.EnsureSuccessStatusCode();
 

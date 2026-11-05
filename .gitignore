@@ -3,3 +3,7 @@ obj/
 .vs/
 *.user
 *.suo
+publish/
+publish-full/
+publish-small/
+release-staging/
