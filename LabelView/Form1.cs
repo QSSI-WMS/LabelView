@@ -200,6 +200,9 @@ namespace LabelView
                 Padding   = new Padding(16),
             };
             rightPanel.Controls.Add(imgPanel);
+            // Fill must be docked last (top of z-order), otherwise it extends
+            // under the toolbar and the top of the label is hidden.
+            imgPanel.BringToFront();
 
             _picture = new PictureBox
             {
